@@ -67,6 +67,19 @@ type ProxyState = readonly [
 const proxyStateMap = new WeakMap<ProxyObject, ProxyState>()
 const refSet = new WeakSet()
 
+/**
+ * @description 创建代理函数
+ * @param objectIs
+ * @param newProxy
+ * @param canProxy
+ * @param shouldTrapDefineProperty
+ * @param defaultHandlePromise
+ * @param snapCache
+ * @param createSnapshot
+ * @param proxyCache  用来存储已经创建的代理对象
+ * @param versionHolder
+ * @param proxyFunction
+ */
 const buildProxyFunction = (
   objectIs = Object.is,
 
@@ -106,7 +119,7 @@ const buildProxyFunction = (
     }
   },
 
-  snapCache = new WeakMap<object, [version: number, snap: unknown]>(),
+  snapCache: WeakMap<object, [version: number, snap: unknown]> = new WeakMap(),
 
   createSnapshot: CreateSnapshot = <T extends object>(
     target: T,
@@ -155,7 +168,7 @@ const buildProxyFunction = (
     return Object.preventExtensions(snap)
   },
 
-  proxyCache = new WeakMap<object, ProxyObject>(),
+  proxyCache: WeakMap<object, ProxyObject> = new WeakMap(),
 
   versionHolder = [1, 1] as [number, number],
 
@@ -163,19 +176,27 @@ const buildProxyFunction = (
     if (!isObject(initialObject)) {
       throw new Error('object required')
     }
+    // 以对象为Key值通过get查找对象的代理器，若已经存在该缓存则直接返回
     const found = proxyCache.get(initialObject) as T | undefined
+    // 若proxyCache中存在则直接返回
     if (found) {
       return found
     }
+    // 跟踪代理对象的版本
+    // 通过对versionHolder进行响应式观察，来检测代理对象的状态变化，避免直接观察代理对象本身，从而提高性能
     let version = versionHolder[0]
     const listeners = new Set<Listener>()
     const notifyUpdate = (op: Op, nextVersion = ++versionHolder[0]) => {
+      // version不一致,更新，遍历listeners
       if (version !== nextVersion) {
+        // 更新version
         version = nextVersion
+        // 遍历listeners，进行操作
         listeners.forEach((listener) => listener(op, nextVersion))
       }
     }
     let checkVersion = versionHolder[1]
+    //确保代理对象和其versionHolder的版本匹配，确保依赖关系在需要时得到正确的通知
     const ensureVersion = (nextCheckVersion = ++versionHolder[1]) => {
       if (checkVersion !== nextCheckVersion && !listeners.size) {
         checkVersion = nextCheckVersion
@@ -233,6 +254,7 @@ const buildProxyFunction = (
       }
       const removeListener = () => {
         listeners.delete(listener)
+        // 当listeners为空时，遍历删除remove
         if (listeners.size === 0) {
           propProxyStates.forEach(([propProxyState, remove], prop) => {
             if (remove) {
@@ -244,6 +266,7 @@ const buildProxyFunction = (
       }
       return removeListener
     }
+    // 若为数组，则返回一个空数组，否则返回一个以initialObject为原型的基本对象
     const baseObject = Array.isArray(initialObject)
       ? []
       : Object.create(Object.getPrototypeOf(initialObject))
@@ -291,6 +314,7 @@ const buildProxyFunction = (
       setValue(nextValue)
       notifyUpdate(['set', [prop], value, prevValue])
     }
+    // 拦截行为
     const handler: ProxyHandler<T> = {
       deleteProperty(target: T, prop: string | symbol) {
         const prevValue = Reflect.get(target, prop)
@@ -336,6 +360,7 @@ const buildProxyFunction = (
       },
     }
     const proxyObject = newProxy(baseObject, handler)
+    // 设置代理对象与其原始对象之间的映射关系
     proxyCache.set(initialObject, proxyObject)
     const proxyState: ProxyState = [
       baseObject,
@@ -344,6 +369,7 @@ const buildProxyFunction = (
       addListener,
     ]
     proxyStateMap.set(proxyObject, proxyState)
+    // 定义完 proxy 后将 p 用 origin obj 进行浅拷贝，set 值并对每个引用层级进行 proxy 监听
     Reflect.ownKeys(initialObject).forEach((key) => {
       const desc = Object.getOwnPropertyDescriptor(
         initialObject,
